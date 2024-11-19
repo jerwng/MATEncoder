@@ -44,19 +44,20 @@ class SelfAttention(nn.Module):
         return y
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, n_embd, max_len=5000):
+    def __init__(self, n_embd, max_len=None):
         super(PositionalEncoding, self).__init__()
+        if max_len is None:
+            max_len = 50
         self.encoding = torch.zeros(max_len, n_embd)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, n_embd, 2).float() * (-math.log(10000.0) / n_embd))
         self.encoding[:, 0::2] = torch.sin(position * div_term)
         self.encoding[:, 1::2] = torch.cos(position * div_term)
-        self.encoding = self.encoding.unsqueeze(1).unsqueeze(0)
+        self.encoding = self.encoding.unsqueeze(0)
 
     def forward(self, x):
-        batch_size, seq_len, n_agents, n_embd = x.size()
-        pos_encoding = self.encoding[:, :, :seq_len, :].to(x.device)
-        pos_encoding = pos_encoding.expand(batch_size, seq_len, n_agents, n_embd)
+        batch_size, seq_len, n_embd = x.size()
+        pos_encoding = self.encoding[:, :seq_len, :].to(x.device)
         return x + pos_encoding
 
 class EncodeBlock(nn.Module):
@@ -122,4 +123,4 @@ class Encoder(nn.Module):
         logit = self.act_head(rep)
         
         return v_loc, rep, logit
-        
+    
