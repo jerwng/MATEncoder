@@ -1,95 +1,114 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 
+def init_(module, activate=False):
+    if isinstance(module, nn.Linear):
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0)
+    return module
+
 class SelfAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, n_agent):
+    def __init__(self, n_embd, n_head, n_agent, masked=False):
         super(SelfAttention, self).__init__()
-        # TODO (DOUBLE CHECK)
-        self.num_heads = num_heads
-        self.embed_dim = embed_dim
-        self.head_dim = embed_dim // num_heads
+        assert n_embd % n_head == 0
+        self.masked = masked
+        self.n_head = n_head
+        self.key = init_(nn.Linear(n_embd, n_embd))
+        self.query = init_(nn.Linear(n_embd, n_embd))
+        self.value = init_(nn.Linear(n_embd, n_embd))
+        self.proj = init_(nn.Linear(n_embd, n_embd))
+        self.register_buffer("mask", torch.tril(torch.ones(n_agent + 1, n_agent + 1))
+                             .view(1, 1, n_agent + 1, n_agent + 1))
+        self.att_bp = None
 
-        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+    def forward(self, key, value, query):
+        B, L, D = query.size()
+        k = self.key(key).view(B, L, self.n_head, D // self.n_head).transpose(1, 2)
+        q = self.query(query).view(B, L, self.n_head, D // self.n_head).transpose(1, 2)
+        v = self.value(value).view(B, L, self.n_head, D // self.n_head).transpose(1, 2)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        if self.masked:
+            att = att.masked_fill(self.mask[:, :, :L, :L] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, L, D)
+        y = self.proj(y)
+        return y
 
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
-
-    def forward(self, x):
-        batch_size, n_agents, embed_dim = x.size()
-
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
-
-        q = q.reshape(batch_size, n_agents, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k = k.reshape(batch_size, n_agents, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        v = v.reshape(batch_size, n_agents, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
-        attn_output = torch.matmul(attn_weights, v)
-        attn_output = attn_output.permute(0, 2, 1, 3).reshape(batch_size, n_agents, embed_dim)
-
-        output = self.out_proj(attn_output)
-
-        return output
-        
 class PositionalEncoding(nn.Module):
-    def __init__(self, embed_dim, max_len=5000):
+    def __init__(self, n_embd, max_len=5000):
         super(PositionalEncoding, self).__init__()
-        self.encoding = torch.zeros(max_len, embed_dim)
+        self.encoding = torch.zeros(max_len, n_embd)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, embed_dim, 2).float() * (-math.log(10000.0) / embed_dim))
+        div_term = torch.exp(torch.arange(0, n_embd, 2).float() * (-math.log(10000.0) / n_embd))
         self.encoding[:, 0::2] = torch.sin(position * div_term)
         self.encoding[:, 1::2] = torch.cos(position * div_term)
-        self.encoding = self.encoding.unsqueeze(0)
+        self.encoding = self.encoding.unsqueeze(1).unsqueeze(0)
 
     def forward(self, x):
-        seq_len = x.size(1)
-        x = x + self.encoding[:, :seq_len, :].to(x.device)
-        return x
+        batch_size, seq_len, n_agents, n_embd = x.size()
+        pos_encoding = self.encoding[:, :, :seq_len, :].to(x.device)
+        pos_encoding = pos_encoding.expand(batch_size, seq_len, n_agents, n_embd)
+        return x + pos_encoding
 
-class LayerNorm(nn.Module):
-    def __init__(self, embed_dim):
-        super(LayerNorm, self).__init__()
-        self.norm = nn.LayerNorm(embed_dim)
-
-    def forward(self, x, sublayer_output):
-        return self.norm(x + sublayer_output)
-
-class FeedForward(nn.Module):
-    def __init__(self, embed_dim, hidden_dim):
-        super(FeedForward, self).__init__()
-        # TODO (DOUBLE CHECK)
-        self.ln1 = nn.Linear(embed_dim, hidden_dim)
-        self.relu = nn.ReLU()
-        self.ln2 = nn.Linear(hidden_dim, embed_dim)
+class EncodeBlock(nn.Module):
+    def __init__(self, n_embd, n_head, n_agent):
+        super(EncodeBlock, self).__init__()
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+        self.attn = SelfAttention(n_embd, n_head, n_agent, masked=False)
+        self.mlp = nn.Sequential(
+            init_(nn.Linear(n_embd, 1 * n_embd), activate=True),
+            nn.GELU(),
+            init_(nn.Linear(1 * n_embd, n_embd))
+        )
 
     def forward(self, x):
-        x = self.relu(self.ln1(x))
-        x = self.ln2(x)
-        
+        x = self.ln1(x + self.attn(x, x, x))
+        x = self.ln2(x + self.mlp(x))
         return x
 
 class Encoder(nn.Module):
-    def __init__(self, embed_dim, n_heads, n_agent, hidden_dim=None, max_len=5000):
-        if hidden_dim is None:
-            hidden_dim = 4 * embed_dim
-
+    def __init__(self, state_dim, obs_dim, action_dim, n_block, n_embd, n_head, n_agent, encode_state, action_type='Discrete'):
         super(Encoder, self).__init__()
-        self.positional_encoding = PositionalEncoding(embed_dim, max_len)
-        self.layer_norm_1 = LayerNorm(embed_dim)
-        self.layer_norm_2 = LayerNorm(embed_dim)
-        self.attn = SelfAttention(embed_dim, n_heads, n_agent)
-        self.mlp = FeedForward(embed_dim, hidden_dim)
+        self.state_dim = state_dim
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.n_embd = n_embd
+        self.n_agent = n_agent
+        self.encode_state = encode_state
+        self.action_type = action_type
+        self.state_encoder = nn.Sequential(nn.LayerNorm(state_dim),
+                                           init_(nn.Linear(state_dim, n_embd), activate=True), nn.GELU())
+        self.obs_encoder = nn.Sequential(nn.LayerNorm(obs_dim),
+                                         init_(nn.Linear(obs_dim, n_embd), activate=True), nn.GELU())
+        self.positional_encoding = PositionalEncoding(n_embd)
+        self.blocks = nn.Sequential(*[EncodeBlock(n_embd, n_head, n_agent) for _ in range(n_block)])
+        self.head = nn.Sequential(init_(nn.Linear(n_embd, n_embd), activate=True), nn.GELU(), nn.LayerNorm(n_embd),
+                                  init_(nn.Linear(n_embd, 1)))
+        self.act_head = nn.Sequential(init_(nn.Linear(n_embd, n_embd), activate=True), nn.GELU(), nn.LayerNorm(n_embd),
+                                      init_(nn.Linear(n_embd, action_dim)))
+        if action_type != 'Discrete':
+            log_std = torch.ones(action_dim)
+            self.log_std = torch.nn.Parameter(log_std)
 
-    def forward(self, x):
+    def zero_std(self, device):
+        if self.action_type != 'Discrete':
+            log_std = torch.zeros(self.action_dim).to(device)
+            self.log_std.data = log_std
+
+    def forward(self, state, obs):
+        if self.encode_state:
+            state_embeddings = self.state_encoder(state)
+            x = state_embeddings
+        else:
+            obs_embeddings = self.obs_encoder(obs)
+            x = obs_embeddings
         x = self.positional_encoding(x)
-        attn_output = self.attn(x)
-        x = self.layer_norm_1(x, attn_output)
-        ff_output = self.mlp(x)
-        x = self.layer_norm_2(x, ff_output)
-        return x
+        rep = self.blocks(x)
+        v_loc = self.head(rep)
+        logit = self.act_head(rep)
+        return v_loc, rep, logit
