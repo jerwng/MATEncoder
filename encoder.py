@@ -60,15 +60,23 @@ class FeedForward(nn.Module):
         
         return x
 
-class Encoder(nn.module):
+class Encoder(nn.Module):
     def __init__(self, embed_dim, n_heads, n_agent, hidden_dim=None):
         if hidden_dim is None:
-            hidden_dim = 1 * embed_dim
+            hidden_dim = 4 * embed_dim
         
         super(Encoder, self).__init__()
         self.layer_norm_1 = LayerNorm(embed_dim)
         self.layer_norm_2 = LayerNorm(embed_dim)
         self.attn = SelfAttention(embed_dim, n_heads, n_agent)
         self.mlp = FeedForward(embed_dim, hidden_dim)
+
+    def forward(self, x):
+        attn_output = self.attn(x)
+        x = self.layer_norm_1(x, attn_output)
+        ff_output = self.mlp(x)
+        x = self.layer_norm_2(x, ff_output)
+        return x
+
 
 
