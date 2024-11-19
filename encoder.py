@@ -26,15 +26,20 @@ class SelfAttention(nn.Module):
 
     def forward(self, key, value, query):
         B, L, D = query.size()
+        
         k = self.key(key).view(B, L, self.n_head, D // self.n_head).transpose(1, 2)
         q = self.query(query).view(B, L, self.n_head, D // self.n_head).transpose(1, 2)
         v = self.value(value).view(B, L, self.n_head, D // self.n_head).transpose(1, 2)
+        
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        
         if self.masked:
             att = att.masked_fill(self.mask[:, :, :L, :L] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
+        
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, L, D)
+        
         y = self.proj(y)
         return y
 
@@ -81,16 +86,19 @@ class Encoder(nn.Module):
         self.n_agent = n_agent
         self.encode_state = encode_state
         self.action_type = action_type
+
         self.state_encoder = nn.Sequential(nn.LayerNorm(state_dim),
                                            init_(nn.Linear(state_dim, n_embd), activate=True), nn.GELU())
         self.obs_encoder = nn.Sequential(nn.LayerNorm(obs_dim),
                                          init_(nn.Linear(obs_dim, n_embd), activate=True), nn.GELU())
+        
         self.positional_encoding = PositionalEncoding(n_embd)
         self.blocks = nn.Sequential(*[EncodeBlock(n_embd, n_head, n_agent) for _ in range(n_block)])
         self.head = nn.Sequential(init_(nn.Linear(n_embd, n_embd), activate=True), nn.GELU(), nn.LayerNorm(n_embd),
                                   init_(nn.Linear(n_embd, 1)))
         self.act_head = nn.Sequential(init_(nn.Linear(n_embd, n_embd), activate=True), nn.GELU(), nn.LayerNorm(n_embd),
                                       init_(nn.Linear(n_embd, action_dim)))
+        
         if action_type != 'Discrete':
             log_std = torch.ones(action_dim)
             self.log_std = torch.nn.Parameter(log_std)
@@ -108,7 +116,10 @@ class Encoder(nn.Module):
             obs_embeddings = self.obs_encoder(obs)
             x = obs_embeddings
         x = self.positional_encoding(x)
+        
         rep = self.blocks(x)
         v_loc = self.head(rep)
         logit = self.act_head(rep)
+        
         return v_loc, rep, logit
+        
