@@ -12,6 +12,7 @@ from mat.utils.shared_buffer import SharedReplayBuffer
 
 from gymnasium.spaces import Box
 from argparse import Namespace
+import os
 
 # Initialize the environment with only 1 adversary and 1 good agent
 def custom_env():
@@ -62,8 +63,8 @@ obs_dim = env.observation_space(env.agents[0]).shape[0]
 action_dim = env.action_space(env.agents[0]).n
 state_dim = 37
 n_block = 3
-n_embd = 32
-n_head = 4
+n_embd = 512
+n_head = 8
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 all_args_dict = {
@@ -94,7 +95,7 @@ all_args_dict = {
     "use_value_active_masks": True,
     "use_policy_active_masks": True,
     "dec_actor": False,
-    "lr": 0.0007,
+    "lr": 0.0001,
     "opti_eps": 1e-05,
     "weight_decay": 0,
     "n_block": 1,
@@ -111,6 +112,10 @@ all_args = Namespace(**all_args_dict)
 policy = Policy(all_args, env.observation_space(env.agents[0]), env.shared_observations, env.action_space(env.agents[0]), n_agents, device=device)
 trainer = TrainAlgo(all_args, policy, n_agents, device=device)
 buffer = SharedReplayBuffer(all_args, n_agents,  env.observation_space(env.agents[0]), env.shared_observations, env.action_space(env.agents[0]), all_args.env_name)
+
+# Directory to save models
+save_dir = f"models/"
+os.makedirs(save_dir, exist_ok=True)
 
 # COPIED functions
 
@@ -166,6 +171,10 @@ def compute():
     next_values = np.array(np.split(_t2n(next_values), all_args.n_rollout_threads))
     buffer.compute_returns(next_values, trainer.value_normalizer)
 
+def save(episode=0):
+    """Save policy's actor and critic networks."""
+    policy.save(save_dir, episode)
+
 def train():
     """Train adversary policies with data in buffer. """
     trainer.prep_training()
@@ -174,7 +183,7 @@ def train():
     return train_infos
 
 # Training function
-def train_adversary(env, episodes=1000, gamma=0.99, save_interval=100, save_path=f'models/adversary_{current_time}.pth'):
+def train_adversary(env, episodes=1000, gamma=0.99, save_interval=100):
     for episode in range(episodes):
         observations, infos = env.reset()
 
@@ -229,9 +238,9 @@ def train_adversary(env, episodes=1000, gamma=0.99, save_interval=100, save_path
         writer.add_scalar(f'Reward/{adversary}', total_reward, episode)
 
         # Save the model periodically
-        if (episode + 1) % save_interval == 0:
-            # save_model(model, save_path)
-            pass
+        if (episode % save_interval == 0 or episode == episodes - 1):
+            save()
+
         buffer_rewards = np.mean(buffer.rewards) * all_args.episode_length
 
         print(f"Episode {episode + 1}/{episodes}, Total Reward: {total_reward:.2f}, Buffer ReWARD: {buffer_rewards}")

@@ -4,6 +4,7 @@ from mat.utils.util import update_linear_schedule
 from mat.utils.util import get_shape_from_obs_space, get_shape_from_act_space
 from mat.algorithms.utils.util import check
 from mat.algorithms.mat.algorithm.ma_transformer import MultiAgentTransformer
+from datetime import datetime
 
 
 class TransformerPolicy:
@@ -83,6 +84,9 @@ class TransformerPolicy:
         self.optimizer = torch.optim.Adam(self.transformer.parameters(),
                                           lr=self.lr, eps=self.opti_eps,
                                           weight_decay=self.weight_decay)
+        
+        # added for saving purposes
+        self.current_time = datetime.now().strftime("%b%d_%H-%M-%S")
 
     def lr_decay(self, episode, episodes):
         """
@@ -213,7 +217,7 @@ class TransformerPolicy:
         return actions, rnn_states_actor
 
     def save(self, save_dir, episode):
-        torch.save(self.transformer.state_dict(), str(save_dir) + "/transformer_" + str(episode) + ".pt")
+        torch.save(self.transformer.state_dict(), str(save_dir) + "/transformer_" + str(self.current_time) + ".pt")
 
     def restore(self, model_dir):
         transformer_state_dict = torch.load(model_dir)
