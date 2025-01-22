@@ -117,6 +117,9 @@ buffer = SharedReplayBuffer(all_args, n_agents,  env.observation_space(env.agent
 save_dir = f"models/"
 os.makedirs(save_dir, exist_ok=True)
 
+# Directory to load model
+model_dir = f"models/transformer_Jan16_20-43-20.pt"
+
 # COPIED functions
 
 def _t2n(x):
@@ -249,76 +252,58 @@ def train_adversary(env, episodes=1000, gamma=0.99, save_interval=100):
     writer.close()
 
 
-def evaluate_adversary(env, model, eval_episodes=10, model_path=None):
-    """
-    Evaluate the trained adversary in the environment.
-    
-    Args:
-        env: The environment to evaluate the agent in.
-        model: The model to be evaluated.
-        eval_episodes: Number of episodes to run the evaluation.
-        model_path: Path to the trained model file to load.
-    """
-    if model_path:
-        model.load_state_dict(torch.load(model_path))
-        print(f"Loaded model from {model_path}")
-    else:
-        print("No model path provided. Using current model.")
-
-    model.eval()
+def evaluate(env, episodes=10):
+    """Evaluate the trained adversary model in the environment."""
+    # Load the latest trained model
+    policy.restore(model_dir)
 
     total_rewards = []
-    for episode in range(eval_episodes):
+
+    for episode in range(episodes):
         observations, infos = env.reset()
-        done = {agent: False for agent in env.agents}
 
         obs_tensor = torch.tensor([observations[env.agents[0]]], dtype=torch.float32, device=device).unsqueeze(0)
         state_tensor = torch.zeros((1, 1, state_dim), dtype=torch.float32, device=device)
+        masks = np.ones((all_args.n_rollout_threads, n_agents, 1), dtype=np.float32)
 
-        episode_reward = 0
+        total_reward = 0
 
-        while not all(done.values()):
+        while env.agents:
             adversary = env.agents[0]
             good_agent = env.agents[1]
 
+            shared_obs = concat_observation(list(observations.values()))
+
             # Get action for the adversary
-            actions, _, _ = model.get_actions(state_tensor, obs_tensor, deterministic=True)
-            action = actions[0, 0].item()
+            trainer.prep_rollout()
+            action, _ = trainer.policy.act(shared_obs, observations[adversary], state_tensor, masks, deterministic=True)
+
+            action = action.cpu().numpy()[0, 0]  # Select action from tensor
 
             # Manually set the good agent's action
             good_action = fixed_action_policy(observations, good_agent)
 
-            # Step the environment
+            # Step the environment with both agents
             actions_dict = {adversary: action, good_agent: good_action}
             observations, rewards_dict, terminations, truncations, infos = env.step(actions_dict)
 
-            # Update episode reward
-            episode_reward += rewards_dict.get(adversary, 0)
-
-            # Render the environment for observation
+            # Render the environment
             env.render()
+
+            total_reward += rewards_dict[adversary]
 
             # Prepare inputs for the next step
             if adversary in observations:
                 obs_tensor = torch.tensor([observations[adversary]], dtype=torch.float32, device=device).unsqueeze(0)
-                state_tensor = torch.zeros((1, 1, state_dim), dtype=torch.float32, device=device)
 
-            done = {agent: terminations.get(agent, False) or truncations.get(agent, False) for agent in env.agents}
+        total_rewards.append(total_reward)
+        print(f"Evaluation Episode {episode + 1}/{episodes}, Total Reward: {total_reward:.2f}")
 
-        total_rewards.append(episode_reward)
-        print(f"Episode {episode + 1}/{eval_episodes}, Reward: {episode_reward:.2f}")
-
-    average_reward = np.mean(total_rewards)
-    print(f"Evaluation completed over {eval_episodes} episodes. Average Reward: {average_reward:.2f}")
-
-    # Close the environment
-    env.close()
-
-# Specify the path to the latest saved model
-# latest_model_path = f'models/adversary_Jan03_00-50-05_ep1000.pth'
+    avg_reward = np.mean(total_rewards)
+    print(f"Average Reward over {episodes} Evaluation Episodes: {avg_reward:.2f}")
 
 # Evaluate the trained adversary
-# evaluate_adversary(env, model, eval_episodes=10, model_path=latest_model_path)
+# evaluate(env, episodes=10)
 
 # Train the adversary
 train_adversary(env, episodes=5000)
