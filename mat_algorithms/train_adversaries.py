@@ -14,9 +14,13 @@ from gymnasium.spaces import Box
 from argparse import Namespace
 import os
 
+n_good_agents = 1
+n_adversaries = 3
+n_agents = n_adversaries  # Only training the adversary
+
 # Initialize the environment with only 1 adversary and 1 good agent
 def custom_env():
-    env = simple_tag_v3.parallel_env(num_good=1, num_adversaries=1, num_obstacles=1, max_cycles=100, render_mode=None)
+    env = simple_tag_v3.parallel_env(num_good=n_good_agents, num_adversaries=n_adversaries, num_obstacles=1, max_cycles=50, render_mode="human")
     env.reset()
 
     # Keep only one adversary and one good agent
@@ -57,12 +61,37 @@ def fixed_action_policy(observations, agent_name):
     else:
         raise ValueError("Fixed action policy should only be used for good agents.")
 
+# Flag to store current direction of rule based action, -1 = left, 1 = right
+current_rule_based_action_x = -1 
+
+def rule_based_action_policy(observations, agent_name):
+    global current_rule_based_action_x
+
+    agent_x_position_state_index = 2
+
+    if "agent" in agent_name:
+        if current_rule_based_action_x == -1:
+            # Keep moving left until agent position state decreases to -0.75
+            if observations[agent_name][agent_x_position_state_index] > -0.75:
+                return 1 # Action corresponding to move left
+            else:
+                current_rule_based_action_x = 1
+                return 2
+        else:
+            # Keep moving right until agent position state increases to 0.75
+            if observations[agent_name][agent_x_position_state_index] < 0.75:
+                return 2 # Action corresponding to move right
+            else:
+                current_rule_based_action_x = -1
+                return 1
+    else:
+        raise ValueError("Fixed action policy should only be used for good agents.")
+
 # Model hyperparameters
-n_agents = 1  # Only training the adversary
 obs_dim = env.observation_space(env.agents[0]).shape[0]
 action_dim = env.action_space(env.agents[0]).n
 state_dim = 37
-n_block = 3
+n_block = 4
 n_embd = 512
 n_head = 8
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -118,7 +147,7 @@ save_dir = f"models/"
 os.makedirs(save_dir, exist_ok=True)
 
 # Directory to load model
-model_dir = f"models/transformer_Jan16_20-43-20.pt"
+model_dir = f"models/1v3-4nb.pt"
 
 # COPIED functions
 
@@ -151,9 +180,7 @@ def collect(step):
 def insert(data):
     shared_obs, obs, rewards, dones1, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic = data
 
-    dones = []
-    dones.append(dones1)
-    dones = np.array([dones])
+    dones = np.array(dones1).reshape(1, n_agents)
 
     rnn_states[dones == True] = np.zeros(((dones == True).sum(), all_args.recurrent_N, all_args.hidden_size), dtype=np.float32)
     rnn_states_critic[dones == True] = np.zeros(((dones == True).sum(), *buffer.rnn_states_critic.shape[3:]), dtype=np.float32)
@@ -201,44 +228,81 @@ def train_adversary(env, episodes=1000, gamma=0.99, save_interval=100):
         step = 0
 
         while env.agents:
-            adversary = env.agents[0]
-            good_agent = env.agents[1]
+            adversaries = []
+            good_agents = []
+
+            for i in range(n_adversaries):
+                adversaries.append(env.agents[i])
+            
+            for i in range(n_adversaries, n_adversaries + n_good_agents):
+                good_agents.append(env.agents[i])
 
             # Get action for the adversary
             values_return, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env = collect(step)
 
-            action = actions[0, 0].item()
-            log_prob = action_log_probs[0, 0]
-            value = values_return[0, 0]
+            adversary_actions = []
+            for i in range(n_adversaries):
+                adversary_actions.append(actions[0, i].item())
 
-            # Manually set the good agent's action
-            good_action = fixed_action_policy(observations, good_agent)
+            good_agent_actions = []
+            for i in range(n_good_agents):
+                # Manually set the good agent's action
+                good_agent_actions.append(fixed_action_policy(observations, good_agents[i]))
+                # good_action = rule_based_action_policy(observations, good_agent)
 
             # Step the environment with both agents
-            actions_dict = {adversary: action, good_agent: good_action}
+            actions_dict = {}
+
+            for i in range(n_adversaries):
+                actions_dict[adversaries[i]] = adversary_actions[i]
+            
+            for i in range(n_good_agents):
+                actions_dict[good_agents[i]] = good_agent_actions[i]
+
             observations, rewards_dict, terminations, truncations, infos = env.step(actions_dict)
 
             shared_obs = concat_observation(list(observations.values()))
 
-            total_reward += rewards_dict[adversary]
+            for i in range(n_adversaries):
+                total_reward += rewards_dict[adversaries[i]]
+
             # rewards.append(rewards_dict[adversary])
             # log_probs.append(log_prob)
             # values.append(value)
-            data_ad = shared_obs, observations[adversary], np.array([rewards_dict[adversary]]), terminations[adversary], infos[adversary], values_return, actions, action_log_probs, rnn_states, rnn_states_critic
+
+            obs_ad_list = []
+            rewards_dict_list = []
+            terminations_list = []
+            infos_list = []
+
+            for i in range(n_adversaries):
+                obs_ad_list.append(observations[adversaries[i]])
+                rewards_dict_list.append(rewards_dict[adversaries[i]])
+                terminations_list.append(terminations[adversaries[i]])
+                infos_list.append(infos[adversaries[i]])
+
+            obs_ad = np.array(obs_ad_list)
+            rewards_ad = np.array(rewards_dict_list).reshape(n_agents,1)
+            term_ad = np.array(terminations_list).reshape(n_agents,1)
+            info_ad = np.array(infos_list)
+
+            # data_ad = shared_obs, observations[adversary1], np.array([rewards_dict[adversary1]]), terminations[adversary1], infos[adversary1], values_return, actions, action_log_probs, rnn_states, rnn_states_critic
+            data_ad = shared_obs, obs_ad, rewards_ad, term_ad, info_ad, values_return, actions, action_log_probs, rnn_states, rnn_states_critic
 
             insert(data_ad)
 
             # Prepare inputs for the next step
-            if adversary in observations:
-                obs_tensor = torch.tensor([observations[adversary]], dtype=torch.float32, device=device).unsqueeze(0)
-                state_tensor = torch.zeros((1, 1, state_dim), dtype=torch.float32, device=device)
+            # if adversary1 in observations:
+            #     obs_tensor = torch.tensor([observations[adversary]], dtype=torch.float32, device=device).unsqueeze(0)
+            #     state_tensor = torch.zeros((1, 1, state_dim), dtype=torch.float32, device=device)
             
             step += 1
 
         compute()
         train_info = train()
 
-        writer.add_scalar(f'Reward/{adversary}', total_reward, episode)
+        for i in range(n_adversaries):
+            writer.add_scalar(f'Reward/{adversaries[i]}', total_reward, episode)
 
         # Save the model periodically
         if (episode % save_interval == 0 or episode == episodes - 1):
@@ -269,32 +333,59 @@ def evaluate(env, episodes=10):
         total_reward = 0
 
         while env.agents:
-            adversary = env.agents[0]
-            good_agent = env.agents[1]
+            adversaries = []
+            good_agents = []
+
+            for i in range(n_adversaries):
+                adversaries.append(env.agents[i])
+            
+            for i in range(n_adversaries, n_adversaries + n_good_agents):
+                good_agents.append(env.agents[i])
 
             shared_obs = concat_observation(list(observations.values()))
+            shared_obs = np.tile(shared_obs, (n_adversaries, 1)) 
+
+            obs_ad_list = []
+
+            for i in range(n_adversaries):
+                obs_ad_list.append(observations[adversaries[i]])
+               
+            obs = np.stack(obs_ad_list, axis=0)
 
             # Get action for the adversary
             trainer.prep_rollout()
-            action, _ = trainer.policy.act(shared_obs, observations[adversary], state_tensor, masks, deterministic=True)
+            actions, _ = trainer.policy.act(shared_obs, obs, state_tensor, masks, deterministic=True)
 
-            action = action.cpu().numpy()[0, 0]  # Select action from tensor
+            adversary_actions = []
+            for i in range(n_adversaries):
+                adversary_actions.append(actions[i,0].item())
 
-            # Manually set the good agent's action
-            good_action = fixed_action_policy(observations, good_agent)
+            good_agent_actions = []
+            for i in range(n_good_agents):
+                # Manually set the good agent's action
+                # good_agent_actions.append(fixed_action_policy(observations, good_agents[i]))
+                good_agent_actions.append(rule_based_action_policy(observations, good_agents[i]))
 
             # Step the environment with both agents
-            actions_dict = {adversary: action, good_agent: good_action}
+            actions_dict = {}
+
+            for i in range(n_adversaries):
+                actions_dict[adversaries[i]] = adversary_actions[i]
+            
+            for i in range(n_good_agents):
+                actions_dict[good_agents[i]] = good_agent_actions[i]
+
             observations, rewards_dict, terminations, truncations, infos = env.step(actions_dict)
 
             # Render the environment
             env.render()
 
-            total_reward += rewards_dict[adversary]
+            for i in range(n_adversaries):
+                total_reward += rewards_dict[adversaries[i]]
 
             # Prepare inputs for the next step
-            if adversary in observations:
-                obs_tensor = torch.tensor([observations[adversary]], dtype=torch.float32, device=device).unsqueeze(0)
+            # if adversary in observations:
+                # obs_tensor = torch.tensor([observations[adversary]], dtype=torch.float32, device=device).unsqueeze(0)
 
         total_rewards.append(total_reward)
         print(f"Evaluation Episode {episode + 1}/{episodes}, Total Reward: {total_reward:.2f}")
@@ -303,7 +394,7 @@ def evaluate(env, episodes=10):
     print(f"Average Reward over {episodes} Evaluation Episodes: {avg_reward:.2f}")
 
 # Evaluate the trained adversary
-# evaluate(env, episodes=10)
+evaluate(env, episodes=10)
 
 # Train the adversary
-train_adversary(env, episodes=5000)
+# train_adversary(env, episodes=5000)
