@@ -61,29 +61,52 @@ def fixed_action_policy(observations, agent_name):
     else:
         raise ValueError("Fixed action policy should only be used for good agents.")
 
-# Flag to store current direction of rule based action, -1 = left, 1 = right
+# Flag to store current direction of rule based action, -1 = left/down, 1 = right/up
 current_rule_based_action_x = -1 
+current_rule_based_action_y = -1
 
 def rule_based_action_policy(observations, agent_name):
     global current_rule_based_action_x
+    global current_rule_based_action_y
 
+    direction = np.random.choice(['x', 'y'])
+
+    # Indices of x and y positions in the observations array
     agent_x_position_state_index = 2
+    agent_y_position_state_index = 3
 
     if "agent" in agent_name:
-        if current_rule_based_action_x == -1:
-            # Keep moving left until agent position state decreases to -0.75
-            if observations[agent_name][agent_x_position_state_index] > -0.75:
-                return 1 # Action corresponding to move left
+        if direction == 'x':
+            if current_rule_based_action_x == -1:
+                # Keep moving left until agent position state decreases to -0.75
+                if observations[agent_name][agent_x_position_state_index] > -0.75:
+                    return 1 # Action corresponding to move left
+                else:
+                    current_rule_based_action_x = 1
+                    return 2
             else:
-                current_rule_based_action_x = 1
-                return 2
-        else:
-            # Keep moving right until agent position state increases to 0.75
-            if observations[agent_name][agent_x_position_state_index] < 0.75:
-                return 2 # Action corresponding to move right
+                # Keep moving right until agent position state increases to 0.75
+                if observations[agent_name][agent_x_position_state_index] < 0.75:
+                    return 2 # Action corresponding to move right
+                else:
+                    current_rule_based_action_x = -1
+                    return 1
+        
+        if direction == 'y':
+            if current_rule_based_action_y == -1:
+                # Keep moving left until agent position state decreases to -0.75
+                if observations[agent_name][agent_y_position_state_index] > -0.75:
+                    return 3 # Action corresponding to move down
+                else:
+                    current_rule_based_action_y = 1
+                    return 4
             else:
-                current_rule_based_action_x = -1
-                return 1
+                # Keep moving right until agent position state increases to 0.75
+                if observations[agent_name][agent_y_position_state_index] < 0.75:
+                    return 4 # Action corresponding to move up
+                else:
+                    current_rule_based_action_y = -1
+                    return 3
     else:
         raise ValueError("Fixed action policy should only be used for good agents.")
 
