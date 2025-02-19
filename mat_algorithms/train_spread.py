@@ -169,10 +169,6 @@ class MARLTrainer:
         for episode in range(episodes):
             observations, infos = self.env.reset()
 
-            obs_tensor = torch.tensor([observations[env.agents[0]]], dtype=torch.float32, device=self.device).unsqueeze(0)
-            state_tensor = torch.zeros((1, 1, self.state_dim), dtype=torch.float32, device=self.device)
-            masks = np.ones((self.all_args.n_rollout_threads, self.n_agents, 1), dtype=np.float32)
-
             # shared_obs = self.concat_observation(np.array(list(observations.values())))
 
             # self.buffer.share_obs[0] = shared_obs.copy()
@@ -196,18 +192,6 @@ class MARLTrainer:
                 self.insert(data)
 
                 step += 1
-
-            if episode % 500 == 0:
-                print(f"Episode {episode}: Actions taken: {actions_dict}")
-
-            if episode % 500 == 0:
-                print(f"Episode {episode}: Total Reward: {np.sum(total_rewards)}")
-
-            if episode % 500 == 0:
-                sampled_actions = self.policy.act(
-                    shared_obs, np.array(list(observations.values())), state_tensor.cpu(), masks, deterministic=False
-                )
-                print(f"Sampled Actions at Episode {episode}: {sampled_actions}")
         
             self.compute()
             train_info = self.train()
@@ -226,7 +210,7 @@ class MARLTrainer:
             agent_rewards_str = ', '.join([f"Agent_{i}: {reward:.2f}" for i, reward in enumerate(total_rewards)])
             print(f"Episode {episode + 1}/{episodes}, {agent_rewards_str}, Average Episode Reward: {buffer_rewards:.2f}")
 
-        # self.writer.close()
+        self.writer.close()
 
     def evaluate(self, episodes=10, model_path=None):
         if model_path:
