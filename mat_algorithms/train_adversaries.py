@@ -20,7 +20,7 @@ n_agents = n_adversaries  # Only training the adversary
 
 # Initialize the environment with only 1 adversary and 1 good agent
 def custom_env():
-    env = simple_tag_v3.parallel_env(num_good=n_good_agents, num_adversaries=n_adversaries, num_obstacles=1, max_cycles=50, render_mode="human")
+    env = simple_tag_v3.parallel_env(num_good=n_good_agents, num_adversaries=n_adversaries, num_obstacles=1, max_cycles=100, render_mode="human")
     env.reset()
 
     # Keep only one adversary and one good agent
@@ -170,7 +170,7 @@ save_dir = f"models/"
 os.makedirs(save_dir, exist_ok=True)
 
 # Directory to load model
-model_dir = f"models/1v3-4nb.pt"
+model_dir = f"models/transformer_Feb20_18-15-33.pt"
 
 # COPIED functions
 
@@ -270,8 +270,8 @@ def train_adversary(env, episodes=1000, gamma=0.99, save_interval=100):
             good_agent_actions = []
             for i in range(n_good_agents):
                 # Manually set the good agent's action
-                good_agent_actions.append(fixed_action_policy(observations, good_agents[i]))
-                # good_action = rule_based_action_policy(observations, good_agent)
+                # good_agent_actions.append(fixed_action_policy(observations, good_agents[i]))
+                good_agent_actions.append(rule_based_action_policy(observations, good_agents[i]))
 
             # Step the environment with both agents
             actions_dict = {}
